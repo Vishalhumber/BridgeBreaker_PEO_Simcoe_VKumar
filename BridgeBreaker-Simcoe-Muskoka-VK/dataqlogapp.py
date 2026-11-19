@@ -3,10 +3,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from matplotlib.widgets import Button
 import pandas as pd
 import serial
 import serial.tools.list_ports
@@ -17,10 +18,10 @@ import keyboard
 
 # Calibration: Newtons produced by 1 volt from the load cell / force sensor.
 # Example: if 1 V equals 50 N, set this to 50.
-NEWTONS_PER_VOLT = -224
+NEWTONS_PER_VOLT = 224
 # Time between saved force readings, in seconds
 # 0.100 seconds = 100 milliseconds = 10 readings per second
-LOG_INTERVAL_SECONDS = 0.100
+LOG_INTERVAL_SECONDS = 0.0001
 
 # Voltage offset at zero load, in volts.
 # If the sensor outputs 0.05 V with no load, set ZERO_OFFSET_VOLTS = 0.05.
@@ -211,6 +212,7 @@ break_events = []
 peak_load_before_break_values = []
 
 start_time = None
+elapsed_time_offset = 0.0
 peak_voltage = None
 low_voltage_samples = 0
 break_detected = False
@@ -219,19 +221,46 @@ peak_load_before_break = None
 # Create live graph
 plt.ion()
 fig, ax = plt.subplots(figsize=(20, 5))
-line, = ax.plot([], [], color="tab:blue", linewidth=2)
+fig.subplots_adjust(bottom=0.22)
+line, = ax.plot([], [], color="tab:blue", linewidth=2, label=participant_name)
 ax.set_xlabel("Time (s)")
 ax.set_ylabel("Force (N)")
 ax.set_title("Force vs. Time")
 ax.grid(True)
 
+comparison_datasets = []
+quit_requested = False
+
 print(f"\n=== BRIDGE BUILDING TEST: {participant_name} ===")
-print("Press G to start, S to stop, Q to quit.")
+print("Use the graph buttons or press G to start, S to stop, Q to quit.")
 print(f"Saving data to: {CSV_FILENAME}\n")
 
 
 def update_graph():
     line.set_data(times, forces)
+
+    plot_times = list(times)
+    plot_forces = list(forces)
+    for dataset in comparison_datasets:
+        plot_times.extend(dataset["times"])
+        plot_forces.extend(dataset["forces"])
+
+    if plot_times:
+        x_min = min(0.0, min(plot_times))
+        x_max = max(plot_times)
+        if x_min == x_max:
+            x_max = x_min + 1.0
+        ax.set_xlim(x_min, x_max)
+
+        y_min = min(plot_forces)
+        y_max = max(plot_forces)
+        pad = max(1.0, abs(y_min) * 0.1, abs(y_max) * 0.1)
+        ax.set_ylim(y_min - pad, y_max + pad)
+
+    if comparison_datasets:
+        ax.legend(loc="best", fontsize=8)
+    elif ax.get_legend():
+        ax.get_legend().remove()
 
     if len(times) > 0:
         current_force = forces[-1]
@@ -247,13 +276,6 @@ def update_graph():
         ax.set_xlabel("Time (s)", fontsize=11)
         ax.set_ylabel("Force (N)", fontsize=11)
         ax.grid(True, linestyle="--", alpha=0.6)
-
-        if len(times) > 1:
-            ax.set_xlim(min(times), max(times))
-            y_min = min(forces)
-            y_max = max(forces)
-            pad = max(1.0, abs(y_min) * 0.1, abs(y_max) * 0.1)
-            ax.set_ylim(y_min - pad, y_max + pad)
 
         for text_obj in ax.texts:
             text_obj.remove()
@@ -293,9 +315,144 @@ def update_graph():
     fig.canvas.flush_events()
 
 
+def refresh_acquisition_buttons():
+    start_button.label.set_text("Start (G)")
+    stop_button.label.set_text("Stop (S)")
+    start_button.ax.set_facecolor("0.85" if acquiring else "0.95")
+    stop_button.ax.set_facecolor("0.95" if acquiring else "0.85")
+    fig.canvas.draw_idle()
+
+
+def start_acquisition(event=None):
+    global acquiring, start_time, elapsed_time_offset
+
+    if acquiring:
+        return
+
+    acquiring = True
+    elapsed_time_offset = times[-1] if times else 0.0
+    start_time = time.perf_counter()
+    send_cmd("start")
+    refresh_acquisition_buttons()
+    print("\nAcquisition started.")
+    print_status()
+
+
+def stop_acquisition(event=None):
+    global acquiring
+
+    if not acquiring:
+        return
+
+    send_cmd("stop")
+    time.sleep(1)
+    ser.reset_input_buffer()
+    acquiring = False
+    refresh_acquisition_buttons()
+    print("\nAcquisition stopped.")
+    print_status()
+
+
+def compare_participant_data(event=None):
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        filenames = filedialog.askopenfilenames(
+            parent=root,
+            title="Select participant test CSV files",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not filenames:
+            return
+
+        existing_paths = {dataset["path"] for dataset in comparison_datasets}
+        new_datasets = []
+        for filename in filenames:
+            csv_path = Path(filename).resolve()
+            if csv_path in existing_paths:
+                continue
+
+            frame = pd.read_csv(csv_path)
+            required_columns = {"Participant_Name", "Time_s", "Force_N"}
+            missing_columns = required_columns.difference(frame.columns)
+            if missing_columns:
+                raise ValueError(
+                    f"{csv_path.name} is missing required columns: "
+                    f"{', '.join(sorted(missing_columns))}."
+                )
+
+            numeric_data = frame[["Time_s", "Force_N"]].apply(
+                pd.to_numeric, errors="coerce"
+            )
+            if numeric_data.empty or numeric_data.isna().any().any():
+                raise ValueError(
+                    f"{csv_path.name} has no complete numeric time/force data."
+                )
+
+            names = frame["Participant_Name"].dropna().astype(str)
+            participant = names.iloc[0] if not names.empty else csv_path.stem
+            new_datasets.append({
+                "path": csv_path,
+                "participant": participant,
+                "times": numeric_data["Time_s"].tolist(),
+                "forces": numeric_data["Force_N"].tolist(),
+            })
+            existing_paths.add(csv_path)
+
+        for dataset in new_datasets:
+            (dataset["line"],) = ax.plot(
+                dataset["times"],
+                dataset["forces"],
+                linewidth=1.5,
+                alpha=0.8,
+                label=dataset["participant"],
+            )
+            comparison_datasets.append(dataset)
+
+        update_graph()
+    except (OSError, pd.errors.ParserError, UnicodeDecodeError, ValueError) as error:
+        messagebox.showerror(
+            "Unable to compare participant data",
+            str(error),
+            parent=root,
+        )
+    finally:
+        root.destroy()
+
+
+def clear_comparisons(event=None):
+    for dataset in comparison_datasets:
+        dataset["line"].remove()
+    comparison_datasets.clear()
+    update_graph()
+
+
+def quit_application(event=None):
+    global quit_requested
+
+    stop_acquisition()
+    quit_requested = True
+
+
+button_specs = (
+    (0.08, 0.12, "Start (G)", start_acquisition),
+    (0.22, 0.12, "Stop (S)", stop_acquisition),
+    (0.36, 0.18, "Compare CSVs", compare_participant_data),
+    (0.56, 0.18, "Clear Comparisons", clear_comparisons),
+    (0.76, 0.14, "Quit (Q)", quit_application),
+)
+buttons = []
+for left, width, label, callback in button_specs:
+    button_ax = fig.add_axes([left, 0.06, width, 0.09])
+    buttons.append(Button(button_ax, label))
+    buttons[-1].on_clicked(callback)
+start_button, stop_button = buttons[:2]
+refresh_acquisition_buttons()
+
+
 def print_status():
     if not times:
-        status = "IDLE"
+        status = "ACQUIRING" if acquiring else "IDLE"
         current_force = 0.0
         peak_force = 0.0
         average_force = 0.0
@@ -323,26 +480,15 @@ def print_status():
 print_status()
 
 
-while True:
+while not quit_requested and plt.fignum_exists(fig.number):
     if keyboard.is_pressed("g") or keyboard.is_pressed("G"):
-        if not acquiring:
-            acquiring = True
-            start_time = time.perf_counter()
-            send_cmd("start")
-            print("Acquisition started.")
+        start_acquisition()
 
     elif keyboard.is_pressed("s") or keyboard.is_pressed("S"):
-        if acquiring:
-            send_cmd("stop")
-            time.sleep(1)
-            ser.reset_input_buffer()
-            acquiring = False
-            print("Acquisition stopped.")
+        stop_acquisition()
 
     elif keyboard.is_pressed("q") or keyboard.is_pressed("Q"):
-        send_cmd("stop")
-        time.sleep(0.5)
-        ser.reset_input_buffer()
+        quit_application()
         break
 
     if acquiring and ser.in_waiting >= 2 * len(slist):
@@ -361,7 +507,11 @@ while True:
                 continue
 
             if i == force_index:
-                elapsed_time = time.perf_counter() - start_time
+                elapsed_time = (
+                    elapsed_time_offset
+                    + time.perf_counter()
+                    - start_time
+                )
                 force = (voltage - ZERO_OFFSET_VOLTS) * NEWTONS_PER_VOLT
                 is_break_event = False
 
@@ -415,6 +565,8 @@ while True:
                 update_graph()
                 print_status()
 
+    plt.pause(0.01)
+
 # Stop acquisition and close everything cleanly
 send_cmd("stop")
 time.sleep(0.5)
@@ -439,7 +591,21 @@ df.to_csv(CSV_FILENAME, index=False)
 # Save a static graph after logging ends
 plt.ioff()
 fig, ax = plt.subplots(figsize=(10, 5))
-ax.plot(times, forces, color="#1f77b4", linewidth=2)
+ax.plot(
+    times,
+    forces,
+    color="#1f77b4",
+    linewidth=2,
+    label=participant_name,
+)
+for dataset in comparison_datasets:
+    ax.plot(
+        dataset["times"],
+        dataset["forces"],
+        linewidth=1.5,
+        alpha=0.8,
+        label=dataset["participant"],
+    )
 ax.set_xlabel("Time (s)", fontsize=11)
 ax.set_ylabel("Force (N)", fontsize=11)
 ax.set_title(
@@ -491,6 +657,9 @@ if forces:
         fontsize=10,
         bbox=dict(boxstyle="round,pad=0.35", facecolor="white", edgecolor="0.7", alpha=0.9)
     )
+
+if comparison_datasets:
+    ax.legend(loc="best", fontsize=8)
 
 graph_filename = CSV_FILENAME.with_suffix(".png")
 plt.savefig(graph_filename, dpi=200, bbox_inches="tight")
