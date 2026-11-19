@@ -23,8 +23,9 @@ import serial.tools.list_ports
 NEWTONS_PER_VOLT = 224
 ZERO_OFFSET_VOLTS = 0.0
 FORCE_CHANNEL = 0
+LOG_INTERVAL_SECONDS = 0.1
 
-BREAK_VOLTAGE_DROP_PERCENT = 90
+BREAK_VOLTAGE_DROP_PERCENT = 20
 BREAK_CONFIRMATION_SAMPLES = 3
 
 # -----------------------------------------------
@@ -58,6 +59,7 @@ peak_voltage = None
 low_voltage_samples = 0
 break_detected = False
 peak_load_before_break = None
+last_logged_elapsed = None
 
 comparison_datasets = []
 APP_DIRECTORY = (
@@ -135,7 +137,7 @@ class BridgeTestApp(tk.Tk):
 
         title = ttk.Label(
             main,
-            text="Bridge Breaker Competition App",
+            text="Bridge Breaker Competition App - Version 1.0",
             font=("Segoe UI", 18, "bold"),
         )
         title.pack(pady=(0, 2))
@@ -147,7 +149,16 @@ class BridgeTestApp(tk.Tk):
         )
         creator_label.pack(pady=(0, 8))
 
-        content = ttk.Frame(main)
+        tabs = ttk.Notebook(main)
+        tabs.pack(fill="both", expand=True, pady=(0, 8))
+        self.tabs = tabs
+
+        main_tab = ttk.Frame(tabs)
+        settings_tab = ttk.Frame(tabs, padding=12)
+        tabs.add(main_tab, text="Main")
+        tabs.add(settings_tab, text="Settings")
+
+        content = ttk.Frame(main_tab)
         content.pack(fill="both", expand=True)
 
         controls = ttk.Frame(content)
@@ -162,13 +173,13 @@ class BridgeTestApp(tk.Tk):
         self.participant_count_label = ttk.Label(sidebar, text="Participants: 0")
         self.participant_count_label.pack(anchor="w", pady=(0, 5))
 
-        self.winner_label = ttk.Label(
+        self.highest_load_label = ttk.Label(
             sidebar,
-            text="Winner: —",
+            text="Highest Load Rating: —",
             font=("Segoe UI", 11, "bold"),
             wraplength=280,
         )
-        self.winner_label.pack(anchor="w", pady=(0, 8))
+        self.highest_load_label.pack(anchor="w", pady=(0, 8))
 
         self.participant_table = ttk.Treeview(
             sidebar,
@@ -182,7 +193,7 @@ class BridgeTestApp(tk.Tk):
         self.participant_table.column("rank", width=28, anchor="center", stretch=False)
         self.participant_table.column("participant", width=145, anchor="w")
         self.participant_table.column("peak", width=82, anchor="e", stretch=False)
-        self.participant_table.tag_configure("winner", foreground="#087a34")
+        self.participant_table.tag_configure("highest_load", foreground="#087a34")
         self.participant_table.pack(fill="both", expand=True)
 
         ttk.Button(
@@ -226,12 +237,57 @@ class BridgeTestApp(tk.Tk):
         )
         self.check_in_button.pack(side="left")
 
+        self.testing_complete_button = ttk.Button(
+            setup_frame,
+            text="Testing Complete",
+            command=self.complete_testing,
+        )
+        self.testing_complete_button.pack(side="left", padx=(8, 0))
+
         self.participant_label = ttk.Label(
             setup_frame,
             text="No participant checked in.",
             font=("Segoe UI", 10, "bold"),
         )
         self.participant_label.pack(side="left", padx=15)
+
+        settings_grid = ttk.Frame(settings_tab)
+        settings_grid.pack(fill="x", expand=False)
+
+        settings_fields = (
+            ("Log interval (seconds)", "log_interval_entry", "0.100", 0.001, 60.0, 0.01),
+            ("Newtons per volt", "newtons_per_volt_entry", "224", 0.001, 100000.0, 1.0),
+            ("Zero offset (volts)", "zero_offset_entry", "0.0", -10.0, 10.0, 0.01),
+            ("Force channel", "force_channel_entry", "0", 0, 1, 1),
+            ("Break voltage drop (%)", "break_drop_entry", "20", 0.0, 100.0, 1.0),
+            ("Break confirmation samples", "break_samples_entry", "3", 1, 100, 1),
+        )
+
+        for row, (label_text, attribute_name, default, minimum, maximum, increment) in enumerate(settings_fields):
+            ttk.Label(settings_grid, text=label_text + ":").grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, 12),
+                pady=6,
+            )
+            field = ttk.Spinbox(
+                settings_grid,
+                from_=minimum,
+                to=maximum,
+                increment=increment,
+                width=14,
+            )
+            field.set(default)
+            field.grid(row=row, column=1, sticky="w", pady=6)
+            setattr(self, attribute_name, field)
+
+        self.apply_settings_button = ttk.Button(
+            settings_tab,
+            text="Apply Settings",
+            command=self.apply_settings,
+        )
+        self.apply_settings_button.pack(anchor="w", pady=(12, 0))
 
         control_frame = ttk.LabelFrame(controls, text="Test Controls", padding=10)
         control_frame.pack(fill="x", pady=(0, 10))
@@ -367,7 +423,7 @@ class BridgeTestApp(tk.Tk):
             self.participant_table.delete(row)
 
         for rank, (participant, peak_force) in enumerate(ranked_results, start=1):
-            tags = ("winner",) if rank == 1 else ()
+            tags = ("highest_load",) if rank == 1 else ()
             self.participant_table.insert(
                 "",
                 "end",
@@ -380,20 +436,26 @@ class BridgeTestApp(tk.Tk):
         )
 
         if not ranked_results:
-            winner_text = "Winner: —"
+            highest_load_text = "Highest Load Rating: —"
         else:
-            winning_force = ranked_results[0][1]
-            winners = [
+            highest_load = ranked_results[0][1]
+            highest_load_participants = [
                 participant
                 for participant, peak_force in ranked_results
-                if peak_force == winning_force
+                if peak_force == highest_load
             ]
-            if len(winners) == 1:
-                winner_text = f"Winner: {winners[0]} ({winning_force:.2f} N)"
+            if len(highest_load_participants) == 1:
+                highest_load_text = (
+                    f"Highest Load Rating: {highest_load_participants[0]} "
+                    f"({highest_load:.2f} N)"
+                )
             else:
-                winner_text = f"Tie: {', '.join(winners)} ({winning_force:.2f} N)"
+                highest_load_text = (
+                    f"Tied highest: {', '.join(highest_load_participants)} "
+                    f"({highest_load:.2f} N)"
+                )
 
-        self.winner_label.config(text=winner_text)
+        self.highest_load_label.config(text=highest_load_text)
 
     # ------------------------------------------------------------
     # DATAQ device connection
@@ -536,6 +598,8 @@ class BridgeTestApp(tk.Tk):
 
         self.participant_label.config(text=f"Checked in: {participant_name}")
         self.file_label.config(text=f"Saving data to: {CSV_FILENAME}")
+        if self.device_connected:
+            self.start_button.config(state="normal")
 
         messagebox.showinfo(
             "Ready for test",
@@ -547,10 +611,94 @@ class BridgeTestApp(tk.Tk):
     # Acquisition controls
     # ------------------------------------------------------------
 
-    def start_acquisition(self):
-        global acquiring, start_time, elapsed_time_offset
+    def apply_settings(self, show_confirmation=True):
+        global NEWTONS_PER_VOLT, ZERO_OFFSET_VOLTS, FORCE_CHANNEL
+        global BREAK_VOLTAGE_DROP_PERCENT, BREAK_CONFIRMATION_SAMPLES
+        global LOG_INTERVAL_SECONDS
 
         if acquiring:
+            messagebox.showwarning(
+                "Test in progress",
+                "Stop the test before changing settings.",
+                parent=self,
+            )
+            return False
+
+        try:
+            log_interval = float(self.log_interval_entry.get())
+            newtons_per_volt = float(self.newtons_per_volt_entry.get())
+            zero_offset = float(self.zero_offset_entry.get())
+            force_channel = int(float(self.force_channel_entry.get()))
+            break_drop = float(self.break_drop_entry.get())
+            break_samples = int(float(self.break_samples_entry.get()))
+        except (TypeError, ValueError):
+            messagebox.showerror(
+                "Invalid settings",
+                "Enter valid numeric values for all settings.",
+                parent=self,
+            )
+            return False
+
+        numeric_values = (
+            log_interval,
+            newtons_per_volt,
+            zero_offset,
+            break_drop,
+            break_samples,
+        )
+        if (
+            not all(math.isfinite(value) for value in numeric_values)
+            or log_interval <= 0
+            or newtons_per_volt <= 0
+            or force_channel not in (0, 1)
+            or not 0 <= break_drop <= 100
+            or break_samples < 1
+        ):
+            messagebox.showerror(
+                "Invalid settings",
+                "Check that the log interval and Newtons-per-volt are positive, "
+                "force channel is 0 or 1, break drop is 0-100%, "
+                "and confirmation samples is at least 1.",
+                parent=self,
+            )
+            return False
+
+        LOG_INTERVAL_SECONDS = log_interval
+        NEWTONS_PER_VOLT = newtons_per_volt
+        ZERO_OFFSET_VOLTS = zero_offset
+        FORCE_CHANNEL = force_channel
+        BREAK_VOLTAGE_DROP_PERCENT = break_drop
+        BREAK_CONFIRMATION_SAMPLES = break_samples
+
+        if show_confirmation:
+            messagebox.showinfo(
+                "Settings applied",
+                "The settings have been applied for the next test.",
+                parent=self,
+            )
+        return True
+
+    def set_setting_controls_enabled(self, enabled):
+        state = "normal" if enabled else "disabled"
+        for attribute_name in (
+            "log_interval_entry",
+            "newtons_per_volt_entry",
+            "zero_offset_entry",
+            "force_channel_entry",
+            "break_drop_entry",
+            "break_samples_entry",
+        ):
+            getattr(self, attribute_name).config(state=state)
+        self.apply_settings_button.config(state=state)
+
+    def start_acquisition(self):
+        global acquiring, start_time, elapsed_time_offset
+        global LOG_INTERVAL_SECONDS, last_logged_elapsed
+
+        if acquiring:
+            return
+
+        if not self.apply_settings(show_confirmation=False):
             return
 
         if not self.device_connected:
@@ -572,12 +720,14 @@ class BridgeTestApp(tk.Tk):
 
         acquiring = True
         elapsed_time_offset = times[-1] if times else 0.0
+        last_logged_elapsed = elapsed_time_offset
         start_time = time.perf_counter()
 
         self.send_cmd("start")
 
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
+        self.set_setting_controls_enabled(False)
         self.update_status()
 
     def stop_acquisition(self):
@@ -596,7 +746,84 @@ class BridgeTestApp(tk.Tk):
 
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
+        self.set_setting_controls_enabled(True)
         self.update_status()
+
+    def complete_testing(self):
+        global participant_name, test_folder, CSV_FILENAME
+        global csv_file, csv_writer, start_time, elapsed_time_offset
+        global peak_voltage, low_voltage_samples, break_detected
+        global peak_load_before_break, last_logged_elapsed
+
+        if not participant_name:
+            messagebox.showwarning(
+                "No active test",
+                "Check in a participant before completing testing.",
+                parent=self,
+            )
+            return
+
+        if acquiring:
+            self.stop_acquisition()
+
+        graph_filename = self.save_final_graph()
+
+        if csv_file is not None:
+            csv_file.close()
+            csv_file = None
+        csv_writer = None
+
+        self.refresh_participant_results()
+        self.clear_comparisons()
+
+        for dataset in comparison_datasets:
+            dataset["line"].remove()
+        comparison_datasets.clear()
+
+        times.clear()
+        voltages.clear()
+        forces.clear()
+        break_events.clear()
+        peak_load_before_break_values.clear()
+
+        participant_name = ""
+        test_folder = None
+        CSV_FILENAME = None
+        start_time = None
+        elapsed_time_offset = 0.0
+        peak_voltage = None
+        low_voltage_samples = 0
+        break_detected = False
+        peak_load_before_break = None
+        last_logged_elapsed = None
+
+        self.name_entry.delete(0, tk.END)
+        self.name_entry.focus_set()
+        self.participant_label.config(text="No participant checked in.")
+        self.file_label.config(text="No data file created yet.")
+        self.force_line.set_data([], [])
+        self.axes.set_xlim(0, 1)
+        self.axes.set_ylim(0, 1)
+        self.axes.set_title("Force vs. Time", fontweight="bold")
+        if self.axes.get_legend():
+            self.axes.get_legend().remove()
+        self.figure.canvas.draw_idle()
+
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="disabled")
+        self.check_in_button.config(state="normal")
+        self.set_setting_controls_enabled(True)
+        self.update_status()
+        self.tabs.select(0)
+
+        completed_message = "Testing completed. The app is ready for a new bridge."
+        if graph_filename:
+            completed_message += f"\n\nGraph saved to:\n{graph_filename}"
+        messagebox.showinfo(
+            "Testing complete",
+            completed_message,
+            parent=self,
+        )
 
     # ------------------------------------------------------------
     # Sensor reading, CSV logging, and break detection
@@ -606,6 +833,7 @@ class BridgeTestApp(tk.Tk):
         global start_time, elapsed_time_offset
         global peak_voltage, low_voltage_samples
         global break_detected, peak_load_before_break
+        global LOG_INTERVAL_SECONDS, last_logged_elapsed
 
         if acquiring and ser.is_open and ser.in_waiting >= 2 * len(slist):
             for i, item in enumerate(slist):
@@ -670,7 +898,14 @@ class BridgeTestApp(tk.Tk):
                         self.live_participant_results[participant_name] = participant_peak
                         self._render_participant_results()
 
-                if csv_writer:
+                should_log = (
+                    last_logged_elapsed is None
+                    or elapsed_time - last_logged_elapsed >= LOG_INTERVAL_SECONDS
+                )
+                if is_break_event:
+                    should_log = True
+
+                if csv_writer and should_log:
                     csv_writer.writerow([
                         participant_name,
                         f"{elapsed_time:.6f}",
@@ -684,6 +919,7 @@ class BridgeTestApp(tk.Tk):
                         ),
                     ])
                     csv_file.flush()
+                    last_logged_elapsed = elapsed_time
 
                 if is_break_event:
                     messagebox.showwarning(

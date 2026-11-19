@@ -68,7 +68,7 @@ The CSV is written while acquisition is running; the final graph is generated wh
 
 ## Windows executable
 
-`BridgeBreakerCompetition.exe` is the standalone copy of the sidebar-enabled app, headed **Bridge Breaker Competition App** with the credit **Built by Vishal Kumar**. Run it from a writable folder; it does not require Python on the target PC, but the DATAQ device driver is still required. Test folders are saved beside the executable and appear in the sidebar leaderboard.
+`BridgeBreakerCompetition.exe` is the standalone copy of the app, headed **Bridge Breaker Competition App - Version 1.0** with the credit **Built by Vishal Kumar**. It includes the Settings tab, sidebar leaderboard, and live test controls. Run it from a writable folder; it does not require Python on the target PC, but the DATAQ device driver is still required. Test folders are saved beside the executable and appear in the sidebar leaderboard.
 
 To rebuild it from `BridgeBreakerCompetition.py`, use a Python environment with the app dependencies installed:
 
