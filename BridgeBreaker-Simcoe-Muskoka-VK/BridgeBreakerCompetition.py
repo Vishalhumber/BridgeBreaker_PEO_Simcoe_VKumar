@@ -1024,6 +1024,8 @@ class BridgeTestApp(tk.Tk):
             return
 
         existing_paths = {dataset["path"] for dataset in comparison_datasets}
+        added_count = 0
+        error_count = 0
 
         for filename in filenames:
             csv_path = Path(filename).resolve()
@@ -1032,7 +1034,7 @@ class BridgeTestApp(tk.Tk):
                 continue
 
             try:
-                frame = pd.read_csv(csv_path)
+                frame = pd.read_csv(csv_path, encoding="utf-8-sig")
 
                 required_columns = {"Participant_Name", "Time_s", "Force_N"}
                 missing = required_columns.difference(frame.columns)
@@ -1045,9 +1047,30 @@ class BridgeTestApp(tk.Tk):
                 numeric_data = frame[["Time_s", "Force_N"]].apply(
                     pd.to_numeric, errors="coerce"
                 )
+                valid_rows = numeric_data["Time_s"].notna() & numeric_data["Force_N"].notna()
+                numeric_data = numeric_data.loc[valid_rows]
+
+                if numeric_data.empty:
+                    raise ValueError(
+                        f"{csv_path.name} has no valid numeric Time_s and Force_N rows."
+                    )
+
+                numeric_data = numeric_data[
+                    numeric_data.apply(
+                        lambda row: math.isfinite(float(row["Time_s"]))
+                        and math.isfinite(float(row["Force_N"])),
+                        axis=1,
+                    )
+                ]
+
+                if numeric_data.empty:
+                    raise ValueError(
+                        f"{csv_path.name} has no finite Time_s and Force_N values."
+                    )
 
                 names = frame["Participant_Name"].dropna().astype(str)
                 participant = names.iloc[0] if not names.empty else csv_path.stem
+                participant = participant.strip() or csv_path.stem
 
                 line, = self.axes.plot(
                     numeric_data["Time_s"],
@@ -1066,9 +1089,17 @@ class BridgeTestApp(tk.Tk):
                 })
 
                 existing_paths.add(csv_path)
+                added_count += 1
                 self._render_participant_results()
 
-            except (OSError, pd.errors.ParserError, UnicodeDecodeError, ValueError) as error:
+            except (
+                OSError,
+                pd.errors.EmptyDataError,
+                pd.errors.ParserError,
+                UnicodeDecodeError,
+                ValueError,
+            ) as error:
+                error_count += 1
                 messagebox.showerror(
                     "Unable to compare participant data",
                     str(error),
@@ -1078,6 +1109,7 @@ class BridgeTestApp(tk.Tk):
         if comparison_datasets:
             self.axes.legend(loc="best", fontsize=8)
 
+        self.update_plot()
         self.figure.canvas.draw_idle()
 
     def clear_comparisons(self):
