@@ -1,8 +1,7 @@
 # Bridge Breaker Competition
 
 **Bridge Breaker — PEO Simcoe-Muskoka**  
-**Author:** Vishal Kumar  
-**Institution:** Humber College
+**Author:** Vishal Kumar
 
 ## Overview
 
@@ -86,8 +85,7 @@ Each completed test creates a timestamped folder containing:
 
 ## Author
 
-**Vishal Kumar**  
-Humber College
+**Vishal Kumar**
 
 ## Acknowledgements
 
