@@ -2,6 +2,18 @@
 
 Python data-logging software for bridge-building tests. The app reads a force-sensor voltage through a DATAQ Instruments DI-4718-series data acquisition device, converts the voltage to force, displays a live force-versus-time graph, and saves each test's measurements and graph.
 
+## ⚠️ Important safety and calibration caution
+
+> **CAUTION — READ BEFORE TESTING**
+>
+> - Do not stand directly over the bridge, loading fixture, or failure area during a test.
+> - Wear appropriate personal protective equipment, including safety glasses.
+> - Ensure the bridge, load cell, fixture, and wiring are securely supported and correctly connected before applying any load.
+> - Apply load gradually and stop immediately if the equipment, wiring, mounting, or readings appear unstable.
+> - The force values and automated break marker are estimates. Always review the physical test and saved CSV/graph data before interpreting or reporting a result.
+>
+> **CALIBRATION REQUIRED:** The force conversion depends on the exact load cell, signal conditioning, wiring, DATAQ channel, and calibration. Verify the zero offset and calibrate the system with a known reference load before relying on any displayed force, peak force, or bridge-break result.
+
 ## User manual
 
 The complete Microsoft Word user manual is [`Bridge_Breaker_User_Manual.docx`](Bridge_Breaker_User_Manual.docx). It includes operating instructions, troubleshooting, and screenshot sections for device connection, the live test, and the completed setup.
